@@ -1,0 +1,12 @@
+{
+  "name": "Google Meet Pro",
+  "description": "High-quality video conferencing platform with WebRTC peer-to-peer audio & video, screen sharing, encrypted chat, and professional virtual backgrounds.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "display-capture"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
