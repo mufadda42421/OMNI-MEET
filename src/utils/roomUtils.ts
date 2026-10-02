@@ -28,3 +28,16 @@ export function generateRoomId(): string {
     Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
   return `${seg(3)}-${seg(4)}-${seg(3)}`;
 }
+
+export function getPublicMeetingUrl(roomId: string): string {
+  const cleanId = normalizeRoomId(roomId);
+  let origin = window.location.origin;
+
+  // If running in AI Studio development sandbox (ais-dev-),
+  // convert to the public shared app URL (ais-pre-) so anyone scanning QR code or clicking email can join without auth hurdles!
+  if (origin.includes('ais-dev-')) {
+    origin = origin.replace('ais-dev-', 'ais-pre-');
+  }
+
+  return `${origin}/?room=${cleanId}`;
+}

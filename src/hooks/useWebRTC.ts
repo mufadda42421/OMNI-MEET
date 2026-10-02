@@ -3,6 +3,7 @@ import { Participant, ChatMessage, ReactionEvent } from '../types';
 import { deriveRoomKey, encryptPayload, decryptPayload, generateKeyFingerprint } from '../services/crypto';
 import { soundEffects } from '../services/soundEffects';
 import { normalizeRoomId } from '../utils/roomUtils';
+import { SignalingService, SignalingMessage } from '../services/signaling';
 
 interface UseWebRTCProps {
   roomId: string;
@@ -13,7 +14,7 @@ interface UseWebRTCProps {
   isVideoOff: boolean;
   isScreenSharing: boolean;
   avatarColor: string;
-  enabled: boolean; // only connect when user is actually in-meeting
+  enabled: boolean;
 }
 
 const ICE_SERVERS: RTCConfiguration = {
@@ -45,14 +46,14 @@ export function useWebRTC({
   const [pinnedParticipantId, setPinnedParticipantId] = useState<string | null>(null);
 
   // Stable peer ID for this tab session
-  const localPeerIdRef = useRef<string>(`user-${Math.random().toString(36).substring(2, 9)}`);
-  const wsRef = useRef<WebSocket | null>(null);
+  const localPeerIdRef = useRef<string>(`peer_${Math.random().toString(36).substring(2, 8)}`);
+  const signalingRef = useRef<SignalingService | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const remoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
   const candidateQueueRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const roomKeyRef = useRef<CryptoKey | null>(null);
 
-  // Keep latest mutable references so callbacks don't recreate and trigger re-renders
+  // Keep latest mutable references
   const localStreamRef = useRef<MediaStream | null>(localStream);
   localStreamRef.current = localStream;
   const screenStreamRef = useRef<MediaStream | null>(screenStream);
@@ -97,7 +98,10 @@ export function useWebRTC({
     peerConnectionsRef.current.set(remotePeerId, pc);
 
     // Send local tracks
-    const activeStream = isScreenSharingRef.current && screenStreamRef.current ? screenStreamRef.current : localStreamRef.current;
+    const activeStream =
+      isScreenSharingRef.current && screenStreamRef.current
+        ? screenStreamRef.current
+        : localStreamRef.current;
     if (activeStream) {
       activeStream.getTracks().forEach((track) => {
         try {
@@ -124,25 +128,21 @@ export function useWebRTC({
       }
     };
 
-    // Relay ICE candidate to remote peer via WebSocket
+    // Relay ICE candidate to remote peer
     pc.onicecandidate = (event) => {
-      if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            type: 'signal',
-            to: remotePeerId,
-            from: localPeerIdRef.current,
-            signal: { candidate: event.candidate.toJSON() },
-          })
-        );
+      if (event.candidate && signalingRef.current) {
+        signalingRef.current.publish({
+          type: 'signal',
+          from: localPeerIdRef.current,
+          to: remotePeerId,
+          roomId: normalizedRoomId,
+          signal: { candidate: event.candidate.toJSON() },
+        });
       }
     };
 
     pc.onconnectionstatechange = () => {
-      console.log(`[Omni Meet] WebRTC connection state with ${remotePeerId}: ${pc.connectionState}`);
-      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-        // give peer connection a chance or clean up
-      }
+      console.log(`[Omni Meet] WebRTC state with ${remotePeerId}: ${pc.connectionState}`);
     };
 
     // If initiator, create offer
@@ -153,218 +153,195 @@ export function useWebRTC({
       })
         .then((offer) => pc.setLocalDescription(offer))
         .then(() => {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(
-              JSON.stringify({
-                type: 'signal',
-                to: remotePeerId,
-                from: localPeerIdRef.current,
-                signal: { sdp: pc.localDescription },
-              })
-            );
+          if (signalingRef.current && pc.localDescription) {
+            signalingRef.current.publish({
+              type: 'signal',
+              from: localPeerIdRef.current,
+              to: remotePeerId,
+              roomId: normalizedRoomId,
+              signal: { sdp: pc.localDescription },
+            });
           }
         })
         .catch((err) => console.error('Error creating WebRTC offer:', err));
     }
 
     return pc;
-  }, []);
+  }, [normalizedRoomId]);
 
-  // Handle incoming signals from peers
-  const handleSignal = useCallback(async (fromPeerId: string, signal: { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => {
-    let pc = peerConnectionsRef.current.get(fromPeerId);
-    if (!pc) {
-      pc = createPeerConnection(fromPeerId, false);
-    }
-
-    try {
-      if (signal.sdp) {
-        await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-
-        // Flush any queued ICE candidates
-        const queued = candidateQueueRef.current.get(fromPeerId);
-        if (queued && queued.length > 0) {
-          for (const cand of queued) {
-            try {
-              await pc.addIceCandidate(new RTCIceCandidate(cand));
-            } catch {}
-          }
-          candidateQueueRef.current.delete(fromPeerId);
-        }
-
-        if (signal.sdp.type === 'offer') {
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(
-              JSON.stringify({
-                type: 'signal',
-                to: fromPeerId,
-                from: localPeerIdRef.current,
-                signal: { sdp: pc.localDescription },
-              })
-            );
-          }
-        }
-      } else if (signal.candidate) {
-        if (pc.remoteDescription && pc.remoteDescription.type) {
-          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
-        } else {
-          // Queue candidate until remote description is set
-          const q = candidateQueueRef.current.get(fromPeerId) || [];
-          q.push(signal.candidate);
-          candidateQueueRef.current.set(fromPeerId, q);
-        }
+  // Handle incoming signals
+  const handleSignal = useCallback(
+    async (
+      fromPeerId: string,
+      signal: { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }
+    ) => {
+      let pc = peerConnectionsRef.current.get(fromPeerId);
+      if (!pc) {
+        pc = createPeerConnection(fromPeerId, false);
       }
-    } catch (err) {
-      console.error('Error handling WebRTC signal:', err);
-    }
-  }, [createPeerConnection]);
 
-  // Main WebSocket Connection Effect: ONLY connects when enabled is true and room is valid!
+      try {
+        if (signal.sdp) {
+          await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+
+          // Flush any queued ICE candidates
+          const queued = candidateQueueRef.current.get(fromPeerId);
+          if (queued && queued.length > 0) {
+            for (const cand of queued) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(cand));
+              } catch {}
+            }
+            candidateQueueRef.current.delete(fromPeerId);
+          }
+
+          if (signal.sdp.type === 'offer') {
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            if (signalingRef.current && pc.localDescription) {
+              signalingRef.current.publish({
+                type: 'signal',
+                from: localPeerIdRef.current,
+                to: fromPeerId,
+                roomId: normalizedRoomId,
+                signal: { sdp: pc.localDescription },
+              });
+            }
+          }
+        } else if (signal.candidate) {
+          if (pc.remoteDescription && pc.remoteDescription.type) {
+            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          } else {
+            const q = candidateQueueRef.current.get(fromPeerId) || [];
+            q.push(signal.candidate);
+            candidateQueueRef.current.set(fromPeerId, q);
+          }
+        }
+      } catch (err) {
+        console.error('Error handling WebRTC signal:', err);
+      }
+    },
+    [createPeerConnection, normalizedRoomId]
+  );
+
+  // Main Signaling Connection Effect
   useEffect(() => {
     if (!enabled || !normalizedRoomId) {
       setIsConnected(false);
       return;
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}`;
-    console.log(`[Omni Meet] Connecting to signaling server for room: "${normalizedRoomId}"`);
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    const signaling = new SignalingService();
+    signalingRef.current = signaling;
 
-    ws.onopen = () => {
-      setIsConnected(true);
-      soundEffects.playJoinChime();
-
-      // Join room message
-      ws.send(
-        JSON.stringify({
-          type: 'join-room',
-          roomId: normalizedRoomId,
-          peerId: localPeerIdRef.current,
-          name: userNameRef.current || 'Guest User',
-          avatarColor: avatarColorRef.current,
-          isMuted: isMutedRef.current,
-          isVideoOff: isVideoOffRef.current,
-          isScreenSharing: isScreenSharingRef.current,
-          isHandRaised: false,
-        })
-      );
-    };
-
-    ws.onmessage = async (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-
+    signaling.connect({
+      roomId: normalizedRoomId,
+      localPeerId: localPeerIdRef.current,
+      initialParticipant: {
+        name: userNameRef.current || 'Guest User',
+        avatarColor: avatarColorRef.current,
+        isMuted: isMutedRef.current,
+        isVideoOff: isVideoOffRef.current,
+        isScreenSharing: isScreenSharingRef.current,
+        isHandRaised: false,
+      },
+      onMessage: async (msg: SignalingMessage) => {
         switch (msg.type) {
-          case 'room-roster': {
-            // Received existing participants from server
-            const roster = msg.participants as Participant[];
-            setParticipants((prev) => {
-              const next = new Map(prev);
-              roster.forEach((p) => {
-                if (p.id !== localPeerIdRef.current) {
-                  next.set(p.id, { ...p, isLocal: false });
-                  // We are the joiner, initiate connection with each existing peer
-                  createPeerConnection(p.id, true);
-                }
-              });
-              return next;
-            });
-            break;
-          }
+          case 'announce': {
+            if (!msg.peer || msg.from === localPeerIdRef.current) break;
 
-          case 'peer-joined': {
-            const peer = msg.peer as Participant;
-            if (peer.id === localPeerIdRef.current) break;
+            const newPeer: Participant = {
+              id: msg.from,
+              name: msg.peer.name || 'Guest User',
+              avatarColor: msg.peer.avatarColor || '#4285F4',
+              isMuted: !!msg.peer.isMuted,
+              isVideoOff: !!msg.peer.isVideoOff,
+              isScreenSharing: !!msg.peer.isScreenSharing,
+              isHandRaised: !!msg.peer.isHandRaised,
+              joinedAt: Date.now(),
+              isLocal: false,
+            };
 
             soundEffects.playJoinChime();
             setParticipants((prev) => {
               const next = new Map(prev);
-              next.set(peer.id, { ...peer, isLocal: false });
+              next.set(newPeer.id, newPeer);
               return next;
             });
 
-            // Add system announcement in chat
-            setChatMessages((prev) => [
-              ...prev,
-              {
-                id: `sys-${Date.now()}`,
-                senderId: 'system',
-                senderName: 'Meeting Room',
-                avatarColor: '#5f6368',
-                timestamp: Date.now(),
-                text: `${peer.name} joined the meeting.`,
-                isEncrypted: false,
-                isSystem: true,
+            // Reply with our presence so the new peer registers us
+            signaling.publish({
+              type: 'presence',
+              from: localPeerIdRef.current,
+              to: msg.from,
+              roomId: normalizedRoomId,
+              peer: {
+                id: localPeerIdRef.current,
+                name: userNameRef.current,
+                avatarColor: avatarColorRef.current,
+                isMuted: isMutedRef.current,
+                isVideoOff: isVideoOffRef.current,
+                isScreenSharing: isScreenSharingRef.current,
+                isHandRaised: false,
               },
-            ]);
+            });
+
+            // Establish connection
+            createPeerConnection(newPeer.id, true);
             break;
           }
 
-          case 'peer-left': {
-            const leftId = msg.peerId;
-            soundEffects.playLeaveChime();
-            const leftPeer = participants.get(leftId);
-
-            if (peerConnectionsRef.current.has(leftId)) {
-              try {
-                peerConnectionsRef.current.get(leftId)!.close();
-              } catch {}
-              peerConnectionsRef.current.delete(leftId);
-            }
-            remoteStreamsRef.current.delete(leftId);
-            candidateQueueRef.current.delete(leftId);
+          case 'presence': {
+            if (!msg.peer || msg.from === localPeerIdRef.current) break;
+            const existingPeer: Participant = {
+              id: msg.from,
+              name: msg.peer.name || 'Guest User',
+              avatarColor: msg.peer.avatarColor || '#4285F4',
+              isMuted: !!msg.peer.isMuted,
+              isVideoOff: !!msg.peer.isVideoOff,
+              isScreenSharing: !!msg.peer.isScreenSharing,
+              isHandRaised: !!msg.peer.isHandRaised,
+              joinedAt: Date.now(),
+              isLocal: false,
+            };
 
             setParticipants((prev) => {
               const next = new Map(prev);
-              next.delete(leftId);
+              next.set(existingPeer.id, existingPeer);
               return next;
             });
 
-            if (leftPeer) {
-              setChatMessages((prev) => [
-                ...prev,
-                {
-                  id: `sys-${Date.now()}`,
-                  senderId: 'system',
-                  senderName: 'Meeting Room',
-                  avatarColor: '#5f6368',
-                  timestamp: Date.now(),
-                  text: `${leftPeer.name} left the meeting.`,
-                  isEncrypted: false,
-                  isSystem: true,
-                },
-              ]);
-            }
+            createPeerConnection(existingPeer.id, false);
             break;
           }
 
           case 'signal': {
-            await handleSignal(msg.from, msg.signal);
+            if (msg.signal) {
+              await handleSignal(msg.from, msg.signal);
+            }
             break;
           }
 
-          case 'user-updated': {
-            const { peerId, updates } = msg;
-            setParticipants((prev) => {
-              const next = new Map(prev);
-              const p = next.get(peerId);
-              if (p) {
-                if (updates.isHandRaised && !p.isHandRaised) {
-                  soundEffects.playHandRaiseChime();
+          case 'user-update': {
+            if (msg.updates) {
+              setParticipants((prev) => {
+                const next = new Map(prev);
+                const p = next.get(msg.from);
+                if (p) {
+                  if (msg.updates!.isHandRaised && !p.isHandRaised) {
+                    soundEffects.playHandRaiseChime();
+                  }
+                  next.set(msg.from, { ...p, ...msg.updates });
                 }
-                next.set(peerId, { ...p, ...updates });
-              }
-              return next;
-            });
+                return next;
+              });
+            }
             break;
           }
 
-          case 'chat-message': {
-            const raw = msg.message;
+          case 'chat': {
+            const raw = msg.chatMessage;
+            if (!raw) break;
             let decryptedText = raw.text;
 
             if (raw.isEncrypted && raw.ciphertext && raw.iv && roomKeyRef.current) {
@@ -391,10 +368,10 @@ export function useWebRTC({
           case 'reaction': {
             soundEffects.playReactionPop();
             const newReaction: ReactionEvent = {
-              id: msg.id,
-              peerId: msg.peerId,
-              name: msg.name,
-              emoji: msg.emoji,
+              id: msg.reaction.id,
+              peerId: msg.from,
+              name: msg.reaction.name,
+              emoji: msg.reaction.emoji,
               x: 15 + Math.random() * 70,
             };
             setReactions((prev) => [...prev, newReaction]);
@@ -405,20 +382,37 @@ export function useWebRTC({
             break;
           }
 
+          case 'leave': {
+            soundEffects.playLeaveChime();
+            const leftId = msg.from;
+
+            if (peerConnectionsRef.current.has(leftId)) {
+              try {
+                peerConnectionsRef.current.get(leftId)!.close();
+              } catch {}
+              peerConnectionsRef.current.delete(leftId);
+            }
+            remoteStreamsRef.current.delete(leftId);
+            candidateQueueRef.current.delete(leftId);
+
+            setParticipants((prev) => {
+              const next = new Map(prev);
+              next.delete(leftId);
+              return next;
+            });
+            break;
+          }
+
           default:
             break;
         }
-      } catch (err) {
-        console.error('Error handling WS event:', err);
-      }
-    };
+      },
+    });
 
-    ws.onclose = () => {
-      setIsConnected(false);
-    };
+    setIsConnected(true);
 
     return () => {
-      ws.close();
+      signaling.destroy();
       peerConnectionsRef.current.forEach((pc) => {
         try {
           pc.close();
@@ -427,23 +421,26 @@ export function useWebRTC({
       peerConnectionsRef.current.clear();
       remoteStreamsRef.current.clear();
       candidateQueueRef.current.clear();
+      setParticipants(new Map());
     };
   }, [enabled, normalizedRoomId, createPeerConnection, handleSignal]);
 
-  // Synchronize status updates with server without tearing down the WebSocket
+  // Synchronize status updates
   useEffect(() => {
-    if (!enabled || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(
-      JSON.stringify({
-        type: 'user-update',
+    if (!enabled || !signalingRef.current) return;
+    signalingRef.current.publish({
+      type: 'user-update',
+      from: localPeerIdRef.current,
+      roomId: normalizedRoomId,
+      updates: {
         isMuted,
         isVideoOff,
         isScreenSharing,
         isHandRaised,
         name: userName,
-      })
-    );
-  }, [enabled, isMuted, isVideoOff, isScreenSharing, isHandRaised, userName]);
+      },
+    });
+  }, [enabled, isMuted, isVideoOff, isScreenSharing, isHandRaised, userName, normalizedRoomId]);
 
   // Track replacement when local video stream or screen share changes
   useEffect(() => {
@@ -481,7 +478,7 @@ export function useWebRTC({
   // Send Encrypted Chat Message
   const sendChatMessage = useCallback(
     async (text: string) => {
-      if (!text.trim()) return;
+      if (!text.trim() || !signalingRef.current) return;
 
       let ciphertext = '';
       let iv = '';
@@ -505,34 +502,63 @@ export function useWebRTC({
         iv,
       };
 
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            type: 'chat-message',
-            message: messagePayload,
-          })
-        );
-      }
+      // Show local immediately
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: messagePayload.id,
+          senderId: localPeerIdRef.current,
+          senderName: userNameRef.current || 'You',
+          avatarColor: avatarColorRef.current,
+          timestamp: Date.now(),
+          text,
+          isEncrypted,
+        },
+      ]);
+
+      signalingRef.current.publish({
+        type: 'chat',
+        from: localPeerIdRef.current,
+        roomId: normalizedRoomId,
+        chatMessage: messagePayload,
+      });
     },
-    []
+    [normalizedRoomId]
   );
 
   // Send Reaction
-  const sendReaction = useCallback((emoji: string) => {
-    soundEffects.playReactionPop();
-    const id = `react-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+  const sendReaction = useCallback(
+    (emoji: string) => {
+      soundEffects.playReactionPop();
+      const id = `react-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
+      if (signalingRef.current) {
+        signalingRef.current.publish({
           type: 'reaction',
+          from: localPeerIdRef.current,
+          roomId: normalizedRoomId,
+          reaction: {
+            id,
+            emoji,
+            name: userNameRef.current || 'Participant',
+          },
+        });
+      }
+
+      // Show locally
+      setReactions((prev) => [
+        ...prev,
+        {
           id,
+          peerId: localPeerIdRef.current,
+          name: userNameRef.current || 'You',
           emoji,
-          name: userNameRef.current || 'Participant',
-        })
-      );
-    }
-  }, []);
+          x: 15 + Math.random() * 70,
+        },
+      ]);
+    },
+    [normalizedRoomId]
+  );
 
   // Toggle Hand Raise
   const toggleHandRaise = useCallback(() => {
@@ -564,6 +590,7 @@ export function useWebRTC({
       ctx.fillRect(60, 40, 180, 260);
       ctx.fillStyle = '#64748b';
       ctx.fillRect(80, 80, 25, 60);
+      ctx.fillStyle = '#10b981';
       ctx.fillRect(115, 70, 30, 70);
 
       ctx.fillStyle = '#38bdf8';

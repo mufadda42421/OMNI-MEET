@@ -12,7 +12,7 @@ import {
   Link as LinkIcon,
   Check,
 } from 'lucide-react';
-import { normalizeRoomId, generateRoomId } from '../utils/roomUtils';
+import { normalizeRoomId, generateRoomId, getPublicMeetingUrl } from '../utils/roomUtils';
 
 interface LandingPageProps {
   onStartMeeting: (roomId?: string) => void;
@@ -30,7 +30,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStartMeeting }) => {
 
   const handleCreateForLater = () => {
     const code = generateRoomId();
-    const link = `${window.location.origin}?room=${code}`;
+    const link = getPublicMeetingUrl(code);
     navigator.clipboard.writeText(link);
     setCopiedLink(link);
     setTimeout(() => {

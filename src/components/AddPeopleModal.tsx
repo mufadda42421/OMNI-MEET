@@ -13,7 +13,7 @@ import {
   Send,
 } from 'lucide-react';
 import QRCode from 'qrcode';
-import { normalizeRoomId } from '../utils/roomUtils';
+import { normalizeRoomId, getPublicMeetingUrl } from '../utils/roomUtils';
 
 interface AddPeopleModalProps {
   roomId: string;
@@ -29,7 +29,7 @@ export const AddPeopleModal: React.FC<AddPeopleModalProps> = ({ roomId, onClose 
   const [emailSent, setEmailSent] = useState(false);
 
   const cleanRoomId = normalizeRoomId(roomId);
-  const meetingUrl = `${window.location.origin}?room=${cleanRoomId}`;
+  const meetingUrl = getPublicMeetingUrl(cleanRoomId);
 
   // Generate QR Code on mount
   useEffect(() => {

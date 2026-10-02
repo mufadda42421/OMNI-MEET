@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Mic, MicOff, Hand, Copy, Check, Search, Shield, UserPlus } from 'lucide-react';
 import { Participant } from '../types';
+import { getPublicMeetingUrl } from '../utils/roomUtils';
 
 interface PeoplePanelProps {
   localParticipant: Participant;
@@ -29,7 +30,7 @@ export const PeoplePanel: React.FC<PeoplePanelProps> = ({
     if (onOpenAddPeople) {
       onOpenAddPeople();
     } else {
-      const inviteUrl = `${window.location.origin}?room=${roomId}`;
+      const inviteUrl = getPublicMeetingUrl(roomId);
       navigator.clipboard.writeText(inviteUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);

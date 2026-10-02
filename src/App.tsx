@@ -15,7 +15,7 @@ import { AddPeopleModal } from './components/AddPeopleModal';
 import { MeetingReadyToast } from './components/MeetingReadyToast';
 import { Participant } from './types';
 import { Video, ShieldCheck, Lock, Copy, Check, UserPlus, MessageSquare } from 'lucide-react';
-import { normalizeRoomId, generateRoomId } from './utils/roomUtils';
+import { normalizeRoomId, generateRoomId, getPublicMeetingUrl } from './utils/roomUtils';
 
 const AVATAR_COLORS = ['#1a73e8', '#1e8e3e', '#d93025', '#f9ab00', '#9334e6', '#007b83'];
 
@@ -203,7 +203,7 @@ export default function App() {
 
   // Copy meeting link
   const copyMeetingCode = () => {
-    navigator.clipboard.writeText(`${window.location.origin}?room=${roomId}`);
+    navigator.clipboard.writeText(getPublicMeetingUrl(roomId));
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
   };

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, Copy, Check, UserPlus } from 'lucide-react';
-import { normalizeRoomId } from '../utils/roomUtils';
+import { normalizeRoomId, getPublicMeetingUrl } from '../utils/roomUtils';
 
 interface MeetingReadyToastProps {
   roomId: string;
@@ -15,7 +15,7 @@ export const MeetingReadyToast: React.FC<MeetingReadyToastProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
   const cleanRoomId = normalizeRoomId(roomId);
-  const meetingUrl = `${window.location.origin}?room=${cleanRoomId}`;
+  const meetingUrl = getPublicMeetingUrl(cleanRoomId);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(meetingUrl);

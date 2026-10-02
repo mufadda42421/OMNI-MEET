@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, Copy, Check, ShieldCheck, Lock, Link as LinkIcon, Radio } from 'lucide-react';
-import { normalizeRoomId } from '../utils/roomUtils';
+import { normalizeRoomId, getPublicMeetingUrl } from '../utils/roomUtils';
 
 interface MeetingDetailsModalProps {
   roomId: string;
@@ -15,7 +15,7 @@ export const MeetingDetailsModal: React.FC<MeetingDetailsModalProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
   const cleanRoomId = normalizeRoomId(roomId);
-  const meetingUrl = `${window.location.origin}?room=${cleanRoomId}`;
+  const meetingUrl = getPublicMeetingUrl(cleanRoomId);
 
   const copyUrl = () => {
     navigator.clipboard.writeText(meetingUrl);
