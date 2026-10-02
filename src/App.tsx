@@ -14,13 +14,17 @@ import { ReactionsOverlay } from './components/ReactionsOverlay';
 import { AddPeopleModal } from './components/AddPeopleModal';
 import { MeetingReadyToast } from './components/MeetingReadyToast';
 import { Participant } from './types';
-import { Video, ShieldCheck, Lock, Copy, Check, UserPlus } from 'lucide-react';
+import { Video, ShieldCheck, Lock, Copy, Check, UserPlus, MessageSquare } from 'lucide-react';
+import { normalizeRoomId, generateRoomId } from './utils/roomUtils';
 
 const AVATAR_COLORS = ['#1a73e8', '#1e8e3e', '#d93025', '#f9ab00', '#9334e6', '#007b83'];
 
 export default function App() {
   const [meetingState, setMeetingState] = useState<'landing' | 'lobby' | 'in-meeting'>('landing');
-  const [roomId, setRoomId] = useState<string>('');
+  const [roomId, setRoomId] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return normalizeRoomId(params.get('room') || '');
+  });
   const [userName, setUserName] = useState<string>(() => {
     return localStorage.getItem('omni_meet_username') || localStorage.getItem('google_meet_username') || 'You';
   });
@@ -57,7 +61,7 @@ export default function App() {
     switchMic,
   } = useMediaDevices();
 
-  // WebRTC hook
+  // WebRTC hook - only connects when enabled (in-meeting)
   const {
     participants,
     chatMessages,
@@ -81,6 +85,7 @@ export default function App() {
     isVideoOff,
     isScreenSharing,
     avatarColor: userColor,
+    enabled: meetingState === 'in-meeting',
   });
 
   // URL query parameter check on initial mount
@@ -88,9 +93,12 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
     if (roomParam) {
-      setRoomId(roomParam);
-      setMeetingState('lobby');
-      initMedia();
+      const clean = normalizeRoomId(roomParam);
+      if (clean) {
+        setRoomId(clean);
+        setMeetingState('lobby');
+        initMedia();
+      }
     }
   }, [initMedia]);
 
@@ -132,7 +140,7 @@ export default function App() {
   // Start Meeting Flow
   const handleStartMeetingFromLanding = useCallback(
     async (newRoomId?: string) => {
-      const id = newRoomId || `meet-${Math.random().toString(36).substring(2, 6)}`;
+      const id = normalizeRoomId(newRoomId || generateRoomId());
       setRoomId(id);
       window.history.pushState({}, '', `?room=${id}`);
       setMeetingState('lobby');
@@ -238,9 +246,9 @@ export default function App() {
       <ReactionsOverlay reactions={reactions} />
 
       {/* Top Meeting Header */}
-      <header className="h-14 px-4 sm:px-6 flex items-center justify-between border-b border-white/5 bg-[#1e1e1e] shrink-0 z-20">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
+      <header className="h-14 px-3 sm:px-6 flex items-center justify-between border-b border-white/5 bg-[#1e1e1e] shrink-0 z-20">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <div className="flex items-center gap-2 shrink-0">
             <div className="w-7 h-7 rounded-lg bg-[#1a73e8] flex items-center justify-center font-bold text-white shadow-sm">
               <Video className="w-4 h-4 text-white" />
             </div>
@@ -251,34 +259,46 @@ export default function App() {
           <button
             onClick={copyMeetingCode}
             title="Click to copy meeting link"
-            className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#282a2d] hover:bg-[#323438] text-xs font-medium text-slate-200 border border-white/5 transition-all"
+            className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-2.5 py-1 rounded-lg bg-[#282a2d] hover:bg-[#323438] text-xs font-medium text-slate-200 border border-white/5 transition-all truncate"
           >
-            <span className="font-mono text-white">{roomId}</span>
+            <span className="font-mono text-white text-[11px] sm:text-xs truncate max-w-[90px] sm:max-w-none">{roomId}</span>
             {copiedLink ? (
-              <Check className="w-3.5 h-3.5 text-green-400" />
+              <Check className="w-3.5 h-3.5 text-green-400 shrink-0" />
             ) : (
-              <Copy className="w-3.5 h-3.5 text-slate-400" />
+              <Copy className="w-3.5 h-3.5 text-slate-400 shrink-0" />
             )}
           </button>
         </div>
 
-        {/* Security / Encryption Badge & Add People Button */}
-        <div className="flex items-center gap-2.5">
+        {/* Security / Encryption Badge & Add People Button & Mobile Chat */}
+        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+          {/* Quick Chat Shortcut for Mobile */}
+          <button
+            onClick={() => setActivePanel(activePanel === 'chat' ? null : 'chat')}
+            className="sm:hidden relative p-2 rounded-full hover:bg-white/10 text-slate-300 transition-colors"
+            title="In-call chat"
+          >
+            <MessageSquare className="w-4 h-4" />
+            {unreadChatCount > 0 && (
+              <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#8ab4f8]" />
+            )}
+          </button>
+
           <button
             onClick={() => setShowAddPeopleModal(true)}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#1a73e8] hover:bg-[#1557b0] text-white rounded-full text-xs font-semibold shadow-sm transition-all hover:scale-105 active:scale-95"
+            className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 bg-[#1a73e8] hover:bg-[#1557b0] text-white rounded-full text-xs font-semibold shadow-sm transition-all hover:scale-105 active:scale-95"
           >
             <UserPlus className="w-3.5 h-3.5" />
-            <span>Add real people</span>
+            <span className="hidden sm:inline">Add real people</span>
+            <span className="sm:hidden text-xs">Add</span>
           </button>
 
           <button
             onClick={() => setActivePanel('info')}
-            className="flex items-center gap-1.5 px-3 py-1 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 rounded-full text-xs font-medium text-[#8ab4f8] transition-colors"
+            className="flex items-center gap-1.5 px-2 sm:px-3 py-1 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 rounded-full text-xs font-medium text-[#8ab4f8] transition-colors"
           >
             <Lock className="w-3 h-3 text-[#8ab4f8]" />
-            <span className="hidden sm:inline">AES-256 E2E Encrypted</span>
-            <span className="sm:hidden">E2EE</span>
+            <span className="hidden sm:inline">AES-256 E2E</span>
           </button>
         </div>
       </header>

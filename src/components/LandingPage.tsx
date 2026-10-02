@@ -12,6 +12,7 @@ import {
   Link as LinkIcon,
   Check,
 } from 'lucide-react';
+import { normalizeRoomId, generateRoomId } from '../utils/roomUtils';
 
 interface LandingPageProps {
   onStartMeeting: (roomId?: string) => void;
@@ -22,20 +23,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStartMeeting }) => {
   const [showNewMeetingMenu, setShowNewMeetingMenu] = useState(false);
   const [copiedLink, setCopiedLink] = useState<string | null>(null);
 
-  const generateMeetingCode = () => {
-    const chars = 'abcdefghijklmnopqrstuvwxyz';
-    const segment = (len: number) =>
-      Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-    return `${segment(3)}-${segment(4)}-${segment(3)}`;
-  };
-
   const handleStartInstant = () => {
-    const code = generateMeetingCode();
+    const code = generateRoomId();
     onStartMeeting(code);
   };
 
   const handleCreateForLater = () => {
-    const code = generateMeetingCode();
+    const code = generateRoomId();
     const link = `${window.location.origin}?room=${code}`;
     navigator.clipboard.writeText(link);
     setCopiedLink(link);
@@ -47,15 +41,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStartMeeting }) => {
 
   const handleJoinWithCode = (e: React.FormEvent) => {
     e.preventDefault();
-    if (meetingInput.trim()) {
-      // Clean input if user pasted a full URL
-      let code = meetingInput.trim();
-      if (code.includes('room=')) {
-        code = code.split('room=')[1].split('&')[0];
-      } else if (code.includes('/')) {
-        code = code.split('/').pop() || code;
-      }
-      onStartMeeting(code);
+    const normalized = normalizeRoomId(meetingInput);
+    if (normalized) {
+      onStartMeeting(normalized);
     }
   };
 

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, Copy, Check, UserPlus } from 'lucide-react';
+import { normalizeRoomId } from '../utils/roomUtils';
 
 interface MeetingReadyToastProps {
   roomId: string;
@@ -13,7 +14,8 @@ export const MeetingReadyToast: React.FC<MeetingReadyToastProps> = ({
   onDismiss,
 }) => {
   const [copied, setCopied] = useState(false);
-  const meetingUrl = `${window.location.origin}?room=${roomId}`;
+  const cleanRoomId = normalizeRoomId(roomId);
+  const meetingUrl = `${window.location.origin}?room=${cleanRoomId}`;
 
   const handleCopy = () => {
     navigator.clipboard.writeText(meetingUrl);
@@ -22,7 +24,7 @@ export const MeetingReadyToast: React.FC<MeetingReadyToastProps> = ({
   };
 
   return (
-    <div className="absolute bottom-24 left-6 z-40 max-w-sm w-full bg-[#202124] border border-white/10 rounded-3xl p-5 shadow-2xl animate-in fade-in slide-in-from-bottom-5 duration-200">
+    <div className="absolute bottom-24 left-3 right-3 sm:right-auto sm:left-6 z-40 max-w-sm bg-[#202124] border border-white/10 rounded-3xl p-4 sm:p-5 shadow-2xl animate-in fade-in slide-in-from-bottom-5 duration-200">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold text-white font-['Google_Sans',sans-serif]">

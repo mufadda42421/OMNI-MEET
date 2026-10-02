@@ -32,7 +32,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   };
 
   return (
-    <div className="w-80 sm:w-96 h-full bg-[#202124] border-l border-white/5 flex flex-col z-30 shadow-2xl">
+    <div className="fixed inset-0 sm:relative sm:inset-auto w-full sm:w-96 h-full bg-[#202124] border-l border-white/5 flex flex-col z-50 shadow-2xl">
       {/* Header */}
       <div className="h-16 px-5 flex items-center justify-between border-b border-white/5">
         <div className="flex items-center gap-2">

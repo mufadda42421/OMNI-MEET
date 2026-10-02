@@ -54,7 +54,13 @@ wss.on('connection', (ws: WebSocket) => {
 
       switch (data.type) {
         case 'join-room': {
-          const { roomId, peerId, name, avatarColor, isMuted, isVideoOff, isScreenSharing, isHandRaised } = data;
+          let { roomId, peerId, name, avatarColor, isMuted, isVideoOff, isScreenSharing, isHandRaised } = data;
+          if (!roomId || typeof roomId !== 'string') return;
+          
+          // Normalize room ID: lowercase, trim, strip invalid chars
+          roomId = roomId.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+          if (!roomId) return;
+
           currentRoomId = roomId;
           currentPeerId = peerId;
 
@@ -62,6 +68,14 @@ wss.on('connection', (ws: WebSocket) => {
             rooms.set(roomId, new Map());
           }
           const room = rooms.get(roomId)!;
+
+          // If peer already exists (e.g. page refreshed), clean up old socket
+          const existingPeer = room.get(peerId);
+          if (existingPeer && existingPeer.ws !== ws) {
+            try {
+              existingPeer.ws.close();
+            } catch {}
+          }
 
           const newParticipant: Participant = {
             id: peerId,
@@ -75,19 +89,22 @@ wss.on('connection', (ws: WebSocket) => {
             joinedAt: Date.now(),
           };
 
-          // Existing participants list to return to the new peer
-          const existingParticipants = Array.from(room.values()).map(p => ({
-            id: p.id,
-            name: p.name,
-            avatarColor: p.avatarColor,
-            isMuted: p.isMuted,
-            isVideoOff: p.isVideoOff,
-            isScreenSharing: p.isScreenSharing,
-            isHandRaised: p.isHandRaised,
-            joinedAt: p.joinedAt,
-          }));
+          // Existing participants list to return to the new peer (excluding self)
+          const existingParticipants = Array.from(room.values())
+            .filter(p => p.id !== peerId)
+            .map(p => ({
+              id: p.id,
+              name: p.name,
+              avatarColor: p.avatarColor,
+              isMuted: p.isMuted,
+              isVideoOff: p.isVideoOff,
+              isScreenSharing: p.isScreenSharing,
+              isHandRaised: p.isHandRaised,
+              joinedAt: p.joinedAt,
+            }));
 
           room.set(peerId, newParticipant);
+          console.log(`[Omni Meet] Peer "${newParticipant.name}" (${peerId}) joined room: "${roomId}". Total participants: ${room.size}`);
 
           // Reply with current room roster
           ws.send(

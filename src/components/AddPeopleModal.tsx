@@ -13,6 +13,7 @@ import {
   Send,
 } from 'lucide-react';
 import QRCode from 'qrcode';
+import { normalizeRoomId } from '../utils/roomUtils';
 
 interface AddPeopleModalProps {
   roomId: string;
@@ -27,7 +28,8 @@ export const AddPeopleModal: React.FC<AddPeopleModalProps> = ({ roomId, onClose 
   const [emailInput, setEmailInput] = useState('');
   const [emailSent, setEmailSent] = useState(false);
 
-  const meetingUrl = `${window.location.origin}?room=${roomId}`;
+  const cleanRoomId = normalizeRoomId(roomId);
+  const meetingUrl = `${window.location.origin}?room=${cleanRoomId}`;
 
   // Generate QR Code on mount
   useEffect(() => {
@@ -50,7 +52,7 @@ export const AddPeopleModal: React.FC<AddPeopleModalProps> = ({ roomId, onClose 
   };
 
   const copyFullInvite = () => {
-    const inviteText = `You're invited to join an Omni Meet video call.\n\nMeeting link: ${meetingUrl}\nMeeting code: ${roomId}\n\nJoin directly from your web browser or mobile phone. No download required.`;
+    const inviteText = `You're invited to join an Omni Meet video call.\n\nMeeting link: ${meetingUrl}\nMeeting code: ${cleanRoomId}\n\nJoin directly from your web browser or mobile phone. No download required.`;
     navigator.clipboard.writeText(inviteText);
     setCopiedInvite(true);
     setTimeout(() => setCopiedInvite(false), 2500);
@@ -60,9 +62,9 @@ export const AddPeopleModal: React.FC<AddPeopleModalProps> = ({ roomId, onClose 
     e.preventDefault();
     if (!emailInput.trim()) return;
 
-    const subject = encodeURIComponent(`Omni Meet video call invitation: ${roomId}`);
+    const subject = encodeURIComponent(`Omni Meet video call invitation: ${cleanRoomId}`);
     const body = encodeURIComponent(
-      `Hi,\n\nPlease join our video meeting via this link:\n${meetingUrl}\n\nMeeting code: ${roomId}\n\nWorks on desktop and mobile browsers.`
+      `Hi,\n\nPlease join our video meeting via this link:\n${meetingUrl}\n\nMeeting code: ${cleanRoomId}\n\nWorks on desktop and mobile browsers.`
     );
     window.open(`mailto:${emailInput.trim()}?subject=${subject}&body=${body}`, '_blank');
     setEmailSent(true);
@@ -161,7 +163,7 @@ export const AddPeopleModal: React.FC<AddPeopleModalProps> = ({ roomId, onClose 
               <div className="p-4 bg-[#282a2d] rounded-2xl border border-white/5 flex items-center justify-between">
                 <div>
                   <span className="text-xs text-slate-400 block font-medium">Or join with code:</span>
-                  <span className="text-base font-mono text-white font-semibold">{roomId}</span>
+                  <span className="text-base font-mono text-white font-semibold">{cleanRoomId}</span>
                 </div>
                 <button
                   onClick={copyFullInvite}

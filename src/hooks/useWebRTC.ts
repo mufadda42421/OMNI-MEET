@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Participant, ChatMessage, ReactionEvent } from '../types';
 import { deriveRoomKey, encryptPayload, decryptPayload, generateKeyFingerprint } from '../services/crypto';
 import { soundEffects } from '../services/soundEffects';
+import { normalizeRoomId } from '../utils/roomUtils';
 
 interface UseWebRTCProps {
   roomId: string;
@@ -12,6 +13,7 @@ interface UseWebRTCProps {
   isVideoOff: boolean;
   isScreenSharing: boolean;
   avatarColor: string;
+  enabled: boolean; // only connect when user is actually in-meeting
 }
 
 const ICE_SERVERS: RTCConfiguration = {
@@ -19,6 +21,7 @@ const ICE_SERVERS: RTCConfiguration = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun.services.mozilla.com' },
   ],
 };
 
@@ -31,6 +34,7 @@ export function useWebRTC({
   isVideoOff,
   isScreenSharing,
   avatarColor,
+  enabled,
 }: UseWebRTCProps) {
   const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -40,17 +44,38 @@ export function useWebRTC({
   const [encryptionKeyFingerprint, setEncryptionKeyFingerprint] = useState<string>('');
   const [pinnedParticipantId, setPinnedParticipantId] = useState<string | null>(null);
 
+  // Stable peer ID for this tab session
   const localPeerIdRef = useRef<string>(`user-${Math.random().toString(36).substring(2, 9)}`);
   const wsRef = useRef<WebSocket | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const remoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
+  const candidateQueueRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const roomKeyRef = useRef<CryptoKey | null>(null);
+
+  // Keep latest mutable references so callbacks don't recreate and trigger re-renders
+  const localStreamRef = useRef<MediaStream | null>(localStream);
+  localStreamRef.current = localStream;
+  const screenStreamRef = useRef<MediaStream | null>(screenStream);
+  screenStreamRef.current = screenStream;
+  const isScreenSharingRef = useRef<boolean>(isScreenSharing);
+  isScreenSharingRef.current = isScreenSharing;
+  const isMutedRef = useRef<boolean>(isMuted);
+  isMutedRef.current = isMuted;
+  const isVideoOffRef = useRef<boolean>(isVideoOff);
+  isVideoOffRef.current = isVideoOff;
+  const userNameRef = useRef<string>(userName);
+  userNameRef.current = userName;
+  const avatarColorRef = useRef<string>(avatarColor);
+  avatarColorRef.current = avatarColor;
+
+  const normalizedRoomId = normalizeRoomId(roomId);
 
   // Initialize room encryption key
   useEffect(() => {
+    if (!normalizedRoomId) return;
     let isCancelled = false;
     const initCrypto = async () => {
-      const key = await deriveRoomKey(roomId);
+      const key = await deriveRoomKey(normalizedRoomId);
       if (isCancelled) return;
       roomKeyRef.current = key;
       const fingerprint = await generateKeyFingerprint(key);
@@ -60,7 +85,7 @@ export function useWebRTC({
     return () => {
       isCancelled = true;
     };
-  }, [roomId]);
+  }, [normalizedRoomId]);
 
   // Create or retrieve an RTCPeerConnection for a remote peer
   const createPeerConnection = useCallback((remotePeerId: string, isInitiator: boolean) => {
@@ -72,14 +97,18 @@ export function useWebRTC({
     peerConnectionsRef.current.set(remotePeerId, pc);
 
     // Send local tracks
-    const activeStream = isScreenSharing && screenStream ? screenStream : localStream;
+    const activeStream = isScreenSharingRef.current && screenStreamRef.current ? screenStreamRef.current : localStreamRef.current;
     if (activeStream) {
       activeStream.getTracks().forEach((track) => {
-        pc.addTrack(track, activeStream);
+        try {
+          pc.addTrack(track, activeStream);
+        } catch {
+          // Track already added
+        }
       });
     }
 
-    // Handle remote tracks
+    // Handle remote incoming tracks
     pc.ontrack = (event) => {
       const [remoteStream] = event.streams;
       if (remoteStream) {
@@ -103,16 +132,16 @@ export function useWebRTC({
             type: 'signal',
             to: remotePeerId,
             from: localPeerIdRef.current,
-            signal: { candidate: event.candidate },
+            signal: { candidate: event.candidate.toJSON() },
           })
         );
       }
     };
 
     pc.onconnectionstatechange = () => {
+      console.log(`[Omni Meet] WebRTC connection state with ${remotePeerId}: ${pc.connectionState}`);
       if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-        pc.close();
-        peerConnectionsRef.current.delete(remotePeerId);
+        // give peer connection a chance or clean up
       }
     };
 
@@ -139,7 +168,7 @@ export function useWebRTC({
     }
 
     return pc;
-  }, [isScreenSharing, localStream, screenStream]);
+  }, []);
 
   // Handle incoming signals from peers
   const handleSignal = useCallback(async (fromPeerId: string, signal: { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => {
@@ -151,6 +180,18 @@ export function useWebRTC({
     try {
       if (signal.sdp) {
         await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+
+        // Flush any queued ICE candidates
+        const queued = candidateQueueRef.current.get(fromPeerId);
+        if (queued && queued.length > 0) {
+          for (const cand of queued) {
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch {}
+          }
+          candidateQueueRef.current.delete(fromPeerId);
+        }
+
         if (signal.sdp.type === 'offer') {
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
@@ -166,17 +207,30 @@ export function useWebRTC({
           }
         }
       } else if (signal.candidate) {
-        await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        if (pc.remoteDescription && pc.remoteDescription.type) {
+          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        } else {
+          // Queue candidate until remote description is set
+          const q = candidateQueueRef.current.get(fromPeerId) || [];
+          q.push(signal.candidate);
+          candidateQueueRef.current.set(fromPeerId, q);
+        }
       }
     } catch (err) {
       console.error('Error handling WebRTC signal:', err);
     }
   }, [createPeerConnection]);
 
-  // Connect WebSocket & Join Room
+  // Main WebSocket Connection Effect: ONLY connects when enabled is true and room is valid!
   useEffect(() => {
+    if (!enabled || !normalizedRoomId) {
+      setIsConnected(false);
+      return;
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}`;
+    console.log(`[Omni Meet] Connecting to signaling server for room: "${normalizedRoomId}"`);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -188,14 +242,14 @@ export function useWebRTC({
       ws.send(
         JSON.stringify({
           type: 'join-room',
-          roomId,
+          roomId: normalizedRoomId,
           peerId: localPeerIdRef.current,
-          name: userName,
-          avatarColor,
-          isMuted,
-          isVideoOff,
-          isScreenSharing,
-          isHandRaised,
+          name: userNameRef.current || 'Guest User',
+          avatarColor: avatarColorRef.current,
+          isMuted: isMutedRef.current,
+          isVideoOff: isVideoOffRef.current,
+          isScreenSharing: isScreenSharingRef.current,
+          isHandRaised: false,
         })
       );
     };
@@ -211,9 +265,11 @@ export function useWebRTC({
             setParticipants((prev) => {
               const next = new Map(prev);
               roster.forEach((p) => {
-                next.set(p.id, { ...p, isLocal: false });
-                // We are the new peer, so we initiate WebRTC offers to everyone already in the room
-                createPeerConnection(p.id, true);
+                if (p.id !== localPeerIdRef.current) {
+                  next.set(p.id, { ...p, isLocal: false });
+                  // We are the joiner, initiate connection with each existing peer
+                  createPeerConnection(p.id, true);
+                }
               });
               return next;
             });
@@ -222,6 +278,8 @@ export function useWebRTC({
 
           case 'peer-joined': {
             const peer = msg.peer as Participant;
+            if (peer.id === localPeerIdRef.current) break;
+
             soundEffects.playJoinChime();
             setParticipants((prev) => {
               const next = new Map(prev);
@@ -252,10 +310,13 @@ export function useWebRTC({
             const leftPeer = participants.get(leftId);
 
             if (peerConnectionsRef.current.has(leftId)) {
-              peerConnectionsRef.current.get(leftId)!.close();
+              try {
+                peerConnectionsRef.current.get(leftId)!.close();
+              } catch {}
               peerConnectionsRef.current.delete(leftId);
             }
             remoteStreamsRef.current.delete(leftId);
+            candidateQueueRef.current.delete(leftId);
 
             setParticipants((prev) => {
               const next = new Map(prev);
@@ -334,11 +395,10 @@ export function useWebRTC({
               peerId: msg.peerId,
               name: msg.name,
               emoji: msg.emoji,
-              x: 20 + Math.random() * 60, // random percentage across screen width
+              x: 15 + Math.random() * 70,
             };
             setReactions((prev) => [...prev, newReaction]);
 
-            // Auto-clean reaction after animation
             setTimeout(() => {
               setReactions((prev) => prev.filter((r) => r.id !== newReaction.id));
             }, 3000);
@@ -359,23 +419,31 @@ export function useWebRTC({
 
     return () => {
       ws.close();
-      peerConnectionsRef.current.forEach((pc) => pc.close());
+      peerConnectionsRef.current.forEach((pc) => {
+        try {
+          pc.close();
+        } catch {}
+      });
       peerConnectionsRef.current.clear();
       remoteStreamsRef.current.clear();
+      candidateQueueRef.current.clear();
     };
-  }, [roomId, userName, avatarColor, createPeerConnection, handleSignal, isHandRaised, isMuted, isScreenSharing, isVideoOff]);
+  }, [enabled, normalizedRoomId, createPeerConnection, handleSignal]);
 
-  // Synchronize state updates with server
-  const broadcastUserUpdate = useCallback((updates: Partial<Participant>) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'user-update',
-          ...updates,
-        })
-      );
-    }
-  }, []);
+  // Synchronize status updates with server without tearing down the WebSocket
+  useEffect(() => {
+    if (!enabled || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'user-update',
+        isMuted,
+        isVideoOff,
+        isScreenSharing,
+        isHandRaised,
+        name: userName,
+      })
+    );
+  }, [enabled, isMuted, isVideoOff, isScreenSharing, isHandRaised, userName]);
 
   // Track replacement when local video stream or screen share changes
   useEffect(() => {
@@ -392,7 +460,9 @@ export function useWebRTC({
         if (videoSender) {
           videoSender.replaceTrack(videoTrack).catch(console.warn);
         } else {
-          pc.addTrack(videoTrack, activeStream);
+          try {
+            pc.addTrack(videoTrack, activeStream);
+          } catch {}
         }
       }
       if (audioTrack) {
@@ -400,17 +470,13 @@ export function useWebRTC({
         if (audioSender) {
           audioSender.replaceTrack(audioTrack).catch(console.warn);
         } else {
-          pc.addTrack(audioTrack, activeStream);
+          try {
+            pc.addTrack(audioTrack, activeStream);
+          } catch {}
         }
       }
     });
-
-    broadcastUserUpdate({
-      isMuted,
-      isVideoOff,
-      isScreenSharing,
-    });
-  }, [localStream, screenStream, isScreenSharing, isMuted, isVideoOff, broadcastUserUpdate]);
+  }, [localStream, screenStream, isScreenSharing]);
 
   // Send Encrypted Chat Message
   const sendChatMessage = useCallback(
@@ -430,8 +496,8 @@ export function useWebRTC({
       const messagePayload = {
         id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         senderId: localPeerIdRef.current,
-        senderName: userName,
-        avatarColor,
+        senderName: userNameRef.current || 'You',
+        avatarColor: avatarColorRef.current,
         timestamp: Date.now(),
         text: isEncrypted ? '' : text,
         isEncrypted,
@@ -448,38 +514,34 @@ export function useWebRTC({
         );
       }
     },
-    [avatarColor, userName]
+    []
   );
 
   // Send Reaction
-  const sendReaction = useCallback(
-    (emoji: string) => {
-      soundEffects.playReactionPop();
-      const id = `react-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+  const sendReaction = useCallback((emoji: string) => {
+    soundEffects.playReactionPop();
+    const id = `react-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
 
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            type: 'reaction',
-            id,
-            emoji,
-            name: userName,
-          })
-        );
-      }
-    },
-    [userName]
-  );
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'reaction',
+          id,
+          emoji,
+          name: userNameRef.current || 'Participant',
+        })
+      );
+    }
+  }, []);
 
   // Toggle Hand Raise
   const toggleHandRaise = useCallback(() => {
     setIsHandRaised((prev) => {
       const next = !prev;
       if (next) soundEffects.playHandRaiseChime();
-      broadcastUserUpdate({ isHandRaised: next });
       return next;
     });
-  }, [broadcastUserUpdate]);
+  }, []);
 
   // Simulate a realistic remote colleague for immediate testing
   const addSimulatedParticipant = useCallback((simulatedName: string = 'Sarah Chen (Lead Engineer)') => {
@@ -487,7 +549,6 @@ export function useWebRTC({
     const simColors = ['#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#06b6d4'];
     const chosenColor = simColors[Math.floor(Math.random() * simColors.length)];
 
-    // Create an animated canvas stream for the simulated colleague
     const canvas = document.createElement('canvas');
     canvas.width = 640;
     canvas.height = 360;
@@ -496,43 +557,35 @@ export function useWebRTC({
     let frame = 0;
     const interval = setInterval(() => {
       frame++;
-      // Clean modern office aesthetic
       ctx.fillStyle = '#1e293b';
       ctx.fillRect(0, 0, 640, 360);
 
-      // Bookcase in background
       ctx.fillStyle = '#334155';
       ctx.fillRect(60, 40, 180, 260);
       ctx.fillStyle = '#64748b';
       ctx.fillRect(80, 80, 25, 60);
       ctx.fillRect(115, 70, 30, 70);
-      ctx.fillRect(155, 90, 20, 50);
 
-      // Window with soft daylight
       ctx.fillStyle = '#38bdf8';
       ctx.globalAlpha = 0.2;
       ctx.fillRect(400, 40, 180, 200);
       ctx.globalAlpha = 1.0;
 
-      // Desk
       ctx.fillStyle = '#0f172a';
       ctx.fillRect(0, 280, 640, 80);
 
-      // Avatar/Portrait of Sarah
       const bob = Math.sin(frame * 0.04) * 3;
       ctx.beginPath();
       ctx.arc(320, 160 + bob, 55, 0, Math.PI * 2);
       ctx.fillStyle = chosenColor;
       ctx.fill();
 
-      // Initials
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 36px "Google Sans", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(simulatedName.slice(0, 2).toUpperCase(), 320, 160 + bob);
 
-      // "LIVE FEED" indicator
       ctx.fillStyle = '#10b981';
       ctx.beginPath();
       ctx.arc(40, 40, 6, 0, Math.PI * 2);
@@ -579,18 +632,8 @@ export function useWebRTC({
         isEncrypted: false,
         isSystem: true,
       },
-      {
-        id: `msg-${Date.now()}`,
-        senderId: simId,
-        senderName: simulatedName,
-        avatarColor: chosenColor,
-        timestamp: Date.now() + 500,
-        text: 'Hi everyone! Audio and video are crystal clear on my end.',
-        isEncrypted: true,
-      },
     ]);
 
-    // Cleanup simulation on unmount
     return () => {
       clearInterval(interval);
     };

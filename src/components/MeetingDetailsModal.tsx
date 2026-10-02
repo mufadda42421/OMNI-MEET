@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, Copy, Check, ShieldCheck, Lock, Link as LinkIcon, Radio } from 'lucide-react';
+import { normalizeRoomId } from '../utils/roomUtils';
 
 interface MeetingDetailsModalProps {
   roomId: string;
@@ -13,7 +14,8 @@ export const MeetingDetailsModal: React.FC<MeetingDetailsModalProps> = ({
   onClose,
 }) => {
   const [copied, setCopied] = useState(false);
-  const meetingUrl = `${window.location.origin}?room=${roomId}`;
+  const cleanRoomId = normalizeRoomId(roomId);
+  const meetingUrl = `${window.location.origin}?room=${cleanRoomId}`;
 
   const copyUrl = () => {
     navigator.clipboard.writeText(meetingUrl);
@@ -22,7 +24,7 @@ export const MeetingDetailsModal: React.FC<MeetingDetailsModalProps> = ({
   };
 
   return (
-    <div className="w-80 sm:w-96 h-full bg-[#202124] border-l border-white/5 flex flex-col z-30 shadow-2xl">
+    <div className="fixed inset-0 sm:relative sm:inset-auto w-full sm:w-96 h-full bg-[#202124] border-l border-white/5 flex flex-col z-50 shadow-2xl">
       {/* Header */}
       <div className="h-16 px-5 flex items-center justify-between border-b border-white/5">
         <h2 className="font-medium text-base text-white">Meeting details</h2>
@@ -55,7 +57,7 @@ export const MeetingDetailsModal: React.FC<MeetingDetailsModalProps> = ({
 
           <div className="text-xs text-slate-400 flex items-center gap-2">
             <span className="font-medium text-slate-300">Meeting code:</span>
-            <span className="font-mono bg-black/30 px-2 py-0.5 rounded text-white">{roomId}</span>
+            <span className="font-mono bg-black/30 px-2 py-0.5 rounded text-white">{cleanRoomId}</span>
           </div>
         </div>
 

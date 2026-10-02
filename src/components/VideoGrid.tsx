@@ -30,9 +30,9 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
     const filmstrip = allParticipants.filter((p) => p.id !== spotlightTarget.id);
 
     return (
-      <div className="flex-1 w-full h-full p-3 sm:p-4 flex flex-col lg:flex-row gap-3 overflow-hidden">
+      <div className="flex-1 w-full h-full p-2 sm:p-4 flex flex-col lg:flex-row gap-2 sm:gap-3 overflow-hidden">
         {/* Main Stage */}
-        <div className="flex-1 h-full min-h-[300px] flex items-center justify-center">
+        <div className="flex-1 h-full min-h-[220px] flex items-center justify-center">
           <ParticipantTile
             participant={spotlightTarget}
             isLocal={spotlightTarget.isLocal}
@@ -44,11 +44,11 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
 
         {/* Filmstrip (vertical on large screens, horizontal on mobile) */}
         {filmstrip.length > 0 && (
-          <div className="w-full lg:w-72 h-40 lg:h-full flex lg:flex-col gap-3 overflow-x-auto lg:overflow-y-auto shrink-0 pb-1 lg:pb-0">
+          <div className="w-full lg:w-72 h-28 sm:h-36 lg:h-full flex lg:flex-col gap-2 sm:gap-3 overflow-x-auto lg:overflow-y-auto shrink-0 pb-1 lg:pb-0">
             {filmstrip.map((participant) => (
               <div
                 key={participant.id}
-                className="w-56 lg:w-full h-full lg:h-44 shrink-0"
+                className="w-36 sm:w-52 lg:w-full h-full lg:h-40 shrink-0"
               >
                 <ParticipantTile
                   participant={participant}
@@ -70,20 +70,20 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
 
   let gridClasses = 'grid-cols-1 grid-rows-1';
   if (count === 2) {
-    gridClasses = 'grid-cols-1 sm:grid-cols-2 grid-rows-1 sm:grid-rows-1';
+    gridClasses = 'grid-cols-1 sm:grid-cols-2 grid-rows-2 sm:grid-rows-1';
   } else if (count === 3) {
-    gridClasses = 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 grid-rows-2 sm:grid-rows-2 lg:grid-rows-1';
+    gridClasses = 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 grid-rows-3 sm:grid-rows-2 lg:grid-rows-1';
   } else if (count === 4) {
     gridClasses = 'grid-cols-2 grid-rows-2';
   } else if (count <= 6) {
-    gridClasses = 'grid-cols-2 sm:grid-cols-3 grid-rows-2 sm:grid-rows-2';
+    gridClasses = 'grid-cols-2 sm:grid-cols-3 grid-rows-3 sm:grid-rows-2';
   } else {
-    gridClasses = 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 grid-rows-2 sm:grid-rows-3';
+    gridClasses = 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 grid-rows-4 sm:grid-rows-3';
   }
 
   return (
-    <div className="flex-1 w-full h-full p-3 sm:p-4 flex items-center justify-center overflow-hidden">
-      <div className={`grid ${gridClasses} gap-3 sm:gap-4 w-full h-full max-w-[1600px] max-h-[920px]`}>
+    <div className="flex-1 w-full h-full p-2 sm:p-4 flex items-center justify-center overflow-hidden">
+      <div className={`grid ${gridClasses} gap-2 sm:gap-4 w-full h-full max-w-[1600px] max-h-[920px]`}>
         {allParticipants.map((participant) => (
           <div key={participant.id} className="w-full h-full min-h-0 min-w-0">
             <ParticipantTile
